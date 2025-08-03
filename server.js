@@ -7,7 +7,7 @@ const axios = require('axios');
 dotenv.config();
 
 const app = express();
-const port = 3100;
+const port = process.env.PORT || 3100; // 👈 這裡修改！
 
 app.use(cors());
 app.use(express.json());
@@ -317,6 +317,6 @@ app.post('/chat', async (req, res) => {
 });
 
 
-app.listen(3100, () => {
-  console.log("✅ Server is running on port 3100");
+app.listen(port, () => { // 👈 這裡也修改成 port
+  console.log(`✅ Server is running on port ${port}`); // 👈 這裡也修改
 });
