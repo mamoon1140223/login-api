@@ -12,21 +12,47 @@ const port = process.env.PORT || 3100; // 👈 這裡修改！
 app.use(cors());
 app.use(express.json());
 
-// ✅ 資料庫連線設定
-const db = mysql.createConnection({
+// ✅ 資料庫連線池設定（防止冷啟動連線逾時）
+const db = mysql.createPool({
   host: process.env.DB_HOST,
   port: Number(process.env.DB_PORT),
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  connectTimeout: 20000, // 20 秒連線逾時
+  acquireTimeout: 20000, // 20 秒取得連線逾時
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0
 });
 
-db.connect(err => {
+// ✅ 測試資料庫連線
+db.getConnection((err, connection) => {
   if (err) {
     console.error('❌ 資料庫連線失敗：', err);
+    // 不中斷服務，繼續運行以便健康檢查端點可用
   } else {
     console.log('✅ 成功連接資料庫');
+    connection.release();
   }
+});
+
+// ✅ 健康檢查端點（供 Zeabur 檢查服務狀態）
+app.get('/health', (req, res) => {
+  db.ping((err) => {
+    if (err) {
+      console.error('健康檢查失敗：', err);
+      return res.status(503).json({ status: 'unhealthy', error: err.message });
+    }
+    res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+  });
+});
+
+// ✅ 根路徑端點（防止 404）
+app.get('/', (req, res) => {
+  res.json({ message: 'Mamoon API Server 正在運行', version: '1.0.0' });
 });
 
 // ✅ 註冊 API
@@ -185,48 +211,50 @@ app.post('/chat', async (req, res) => {
   }
 
   const normalizedText = userMessage.toLowerCase();
+  let musicInfo = null;
 
-  let mediaType = null;
-  let mediaId = null;
-  let reply = '';
-  let audioUrl = '';
-  let musicInfo = null; // Initialize musicInfo to null
-
+  // ✅ 修正：使用 Promise 處理音樂查詢，避免競態條件
   if (normalizedText.includes('音樂') || normalizedText.includes('唱歌') || normalizedText.includes('聽歌')) {
     let category = null;
     if (normalizedText.includes('安眠曲')) {
-        category = '安眠曲'; // 設置為「安眠曲」
+        category = '安眠曲';
     } else if (normalizedText.includes('歡樂曲')) {
-        category = '歡樂曲'; // 設置為「歡樂」
+        category = '歡樂曲';
     }
 
     let sql, params;
     if (category) {
-        sql = "SELECT * FROM music WHERE category = ? ORDER BY RAND() LIMIT 1"; // 使用精確匹配
-        params = [category]; // 只傳遞 category
+        sql = "SELECT * FROM music WHERE category = ? ORDER BY RAND() LIMIT 1";
+        params = [category];
     } else {
         sql = "SELECT * FROM music ORDER BY RAND() LIMIT 1";
         params = [];
     }
 
-    db.query(sql, params, async (err, results) => {
-        if (err) {
-            console.error('資料庫查詢錯誤：', err);
-            return res.status(500).json({ error: '資料庫查詢錯誤' });
-        }
-        console.log('查詢結果：', results); // 添加這行來檢查查詢結果
-        if (results && results.length > 0) {
-            musicInfo = {
-                media_type: 'music',
-                audio_url: results[0].audio_url,
-                title: results[0].title
-            };
-            console.log('✅ 找到音樂：', results[0].title);
-        } else {
-            console.log('❌ 沒有找到音樂');
-            return res.status(404).json({ error: '沒有找到音樂' });
-        }
-    });
+    try {
+      // ✅ 使用 Promise 同步等待資料庫查詢結果
+      const results = await new Promise((resolve, reject) => {
+        db.query(sql, params, (err, results) => {
+          if (err) reject(err);
+          else resolve(results);
+        });
+      });
+
+      console.log('查詢結果：', results);
+      if (results && results.length > 0) {
+        musicInfo = {
+          media_type: 'music',
+          audio_url: results[0].audio_url,
+          title: results[0].title
+        };
+        console.log('✅ 找到音樂：', results[0].title);
+      } else {
+        console.log('⚠️ 沒有找到音樂，繼續對話');
+      }
+    } catch (err) {
+      console.error('資料庫查詢錯誤：', err);
+      // 不中斷服務，繼續進行對話
+    }
   }
 
   // 你的完整 prompt
@@ -247,19 +275,19 @@ app.post('/chat', async (req, res) => {
   - 抽象詞：探索、經歷、狀況、內容、感觸  
   - 英文詞：fun、cool、nice、ok、yeah  
   - 青少年詞：帥、讚、絕、爆、酷
-  
+
   2. 不可以使用反問句（例如：「你還有沒有...呢？」）  
   改用開放問句：「你下次還想玩嗎？」
-  
+
   3. 要使用小朋友常說的詞，例如：  
   「玩玩具」「吃點心」「痛痛飛走」「好棒棒」「小豚陪你」「哇～你還好嗎？」「抱抱」
-  
+
   4. 說話不能太理性或大人口吻，不能說「我是一個 AI」，也不能講道理。
-  
+
   5. 回應長度請適中，只回應 1~2 段對話，不要重複語意。
-  
+
   6. 不要使用任何表情符號，因為語音系統會唸出這些符號。
-  
+
   7. 不要給小朋友選擇的機會，因為使用者才 2～6 歲，除非小朋友自己指定要玩什麼。
   例如：
   ❌ 不要說：「你想玩積木還是畫畫呢？」
@@ -274,6 +302,7 @@ app.post('/chat', async (req, res) => {
   `;
 
   try {
+    // ✅ 設定 Gemini API 請求逾時
     const response = await axios.post(GEMINI_URL, {
       contents: [
         {
@@ -286,6 +315,8 @@ app.post('/chat', async (req, res) => {
         topP: 0.9,
         maxOutputTokens: 512
       }
+    }, {
+      timeout: 30000 // 30 秒逾時
     });
 
     const aiReply = response.data.candidates?.[0]?.content?.parts?.[0]?.text || '月月好像還沒聽清楚耶～可以再說一次嗎？';
@@ -312,11 +343,65 @@ app.post('/chat', async (req, res) => {
     if (error.response) {
       console.error('📄 回傳錯誤內容：', error.response.data);
     }
-    return res.status(500).json({ error: 'Gemini API 回覆錯誤' });
+    
+    // ✅ 如果有音樂資訊，即使 AI 失敗也回傳預設訊息
+    if (musicInfo) {
+      return res.json({
+        reply: '月月來放音樂給你聽！',
+        media_type: musicInfo.media_type,
+        audio_url: musicInfo.audio_url,
+        title: musicInfo.title
+      });
+    }
+    
+    return res.status(500).json({ 
+      error: 'Gemini API 回覆錯誤',
+      reply: '月月現在有點累，可以等一下再說嗎？'
+    });
   }
 });
 
 
-app.listen(port, () => { // 👈 這裡也修改成 port
-  console.log(`✅ Server is running on port ${port}`); // 👈 這裡也修改
+const server = app.listen(port, () => {
+  console.log(`✅ Server is running on port ${port}`);
+  console.log(`🏥 健康檢查端點: http://localhost:${port}/health`);
+});
+
+// ✅ 優雅關閉處理（適用於 Zeabur 部署）
+const gracefulShutdown = (signal) => {
+  console.log(`\n⚠️ 收到 ${signal} 信號，開始優雅關閉...`);
+  
+  server.close(() => {
+    console.log('✅ HTTP 服務已關閉');
+    
+    db.end((err) => {
+      if (err) {
+        console.error('❌ 資料庫連線關閉錯誤：', err);
+        process.exit(1);
+      }
+      console.log('✅ 資料庫連線已關閉');
+      process.exit(0);
+    });
+  });
+
+  // 如果 30 秒內未完成關閉，強制退出
+  setTimeout(() => {
+    console.error('⚠️ 無法在時限內優雅關閉，強制退出');
+    process.exit(1);
+  }, 30000);
+};
+
+// 監聽終止信號
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// 處理未捕獲的錯誤
+process.on('uncaughtException', (err) => {
+  console.error('❌ 未捕獲的異常：', err);
+  gracefulShutdown('uncaughtException');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ 未處理的 Promise 拒絕：', reason);
+  gracefulShutdown('unhandledRejection');
 });
