@@ -35,9 +35,34 @@ db.getConnection((err, connection) => {
     // 不中斷服務，繼續運行以便健康檢查端點可用
   } else {
     console.log('✅ 成功連接資料庫');
-    connection.release();
+    const createLogTableSql = `
+      CREATE TABLE IF NOT EXISTS chat_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_message TEXT,
+        ai_reply TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+    connection.query(createLogTableSql, (createErr) => {
+      if (createErr) {
+        console.error('❌ 建立 chat_logs 資料表失敗：', createErr);
+      } else {
+        console.log('✅ chat_logs 資料表已就緒');
+      }
+      connection.release();
+    });
   }
 });
+
+const logChatToDB = (userMessage, aiReply) => {
+  if (!userMessage || !aiReply) return;
+  const logSql = 'INSERT INTO chat_logs (user_message, ai_reply) VALUES (?, ?)';
+  db.query(logSql, [userMessage, aiReply], (logErr) => {
+    if (logErr) {
+      console.error('❌ 寫入聊天紀錄失敗：', logErr);
+    }
+  });
+};
 
 // ✅ 健康檢查端點（供 Zeabur 檢查服務狀態）
 app.get('/health', (req, res) => {
@@ -328,6 +353,7 @@ app.post('/chat', async (req, res) => {
         audio_url: musicInfo.audio_url,
         title: musicInfo.title
       });
+      logChatToDB(userMessage, aiReply);
       return res.json({
         reply: aiReply,
         media_type: musicInfo.media_type,
@@ -336,6 +362,7 @@ app.post('/chat', async (req, res) => {
       });
     } else {
       console.log("API 最終回傳：", { reply: aiReply });
+      logChatToDB(userMessage, aiReply);
       return res.json({ reply: aiReply });
     }
   } catch (error) {
@@ -346,17 +373,21 @@ app.post('/chat', async (req, res) => {
     
     // ✅ 如果有音樂資訊，即使 AI 失敗也回傳預設訊息
     if (musicInfo) {
+      const fallbackReply = '月月來放音樂給你聽！';
+      logChatToDB(userMessage, fallbackReply);
       return res.json({
-        reply: '月月來放音樂給你聽！',
+        reply: fallbackReply,
         media_type: musicInfo.media_type,
         audio_url: musicInfo.audio_url,
         title: musicInfo.title
       });
     }
     
+    const errorReply = '月月現在有點累，可以等一下再說嗎？';
+    logChatToDB(userMessage, errorReply);
     return res.status(500).json({ 
       error: 'Gemini API 回覆錯誤',
-      reply: '月月現在有點累，可以等一下再說嗎？'
+      reply: errorReply
     });
   }
 });
