@@ -226,7 +226,7 @@ app.post('/update_profile', (req, res) => {
 });
 
 // ✅ Gemini API 對話整合
-const GEMINI_API_KEY = 'AIzaSyAB5oDihcH3H4UTLxf89UaJIBtB0v5KUHM'; // 👈 替換成你自己的金鑰
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY; 
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
 
 app.post('/chat', async (req, res) => {
